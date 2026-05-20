@@ -60,6 +60,184 @@ EMAIL_HEADERS = frozenset(
 
 NUM_HEADERS = frozenset({"Цена", "Количество", "Возможная сумма"})
 
+# ----------------------------------------------------------------
+# ОПРЕДЕЛЕНИЕ ФОРМАТА
+# ----------------------------------------------------------------
+
+YANDEX_KEYS = {"indexNumber", "parsedAt", "phone_1", "title", "url"}
+
+
+def _is_yandex_format(data: list[dict]) -> bool:
+    """Если хотя бы у одного объекта есть характерные ключи Яндекса — формат Яндекс.Карт"""
+    if not data:
+        return False
+    first_keys = set(data[0].keys())
+    return bool(first_keys & YANDEX_KEYS)
+
+
+# ----------------------------------------------------------------
+# МАППИНГ ЯНДЕКС → БИТРИКС (строки CSV)
+# ----------------------------------------------------------------
+
+def _parse_address_yandex(address: str) -> dict:
+    """Парсит адрес Яндекса: 'Тула, проспект Ленина, 102А' → город, улица"""
+    if not address:
+        return {"city": "", "street": ""}
+    parts = [p.strip() for p in address.split(",", 1)]
+    city = parts[0] if parts else ""
+    street = parts[1] if len(parts) > 1 else ""
+    return {"city": city, "street": street}
+
+
+def _build_comment_yandex(raw: dict) -> str:
+    """Собирает комментарий из данных Яндекса"""
+    lines = []
+
+    # График работы
+    days = []
+    for i in range(7):
+        val = (raw.get(f"Day {i}") or "").strip()
+        if val:
+            days.append(f"День {i}: {val}")
+    if days:
+        lines.append("Режим работы:\n" + "\n".join(days))
+
+    # Статус
+    status = (raw.get("currentWorkingStatus") or "").strip()
+    if status:
+        lines.append(f"Статус: {status}")
+
+    # Категории
+    cats = []
+    for i in range(3):
+        cat = (raw.get(f"Category {i}") or "").strip()
+        if cat:
+            cats.append(cat)
+    if cats:
+        lines.append("Категории: " + ", ".join(cats))
+
+    # Приоритет
+    priority = (raw.get("priority") or "").strip()
+    if priority:
+        lines.append(f"Приоритет: {priority}")
+
+    # Рейтинг
+    rating = raw.get("rating")
+    rating_count = raw.get("ratingCount")
+    if rating is not None:
+        lines.append(f"Рейтинг: {rating} (отзывов: {rating_count or 0})")
+
+    # Место в поиске
+    place = raw.get("placeInSearch")
+    if place is not None:
+        lines.append(f"Место в поиске: {place}")
+
+    # Остановки
+    stops = []
+    for i in range(5):
+        stop = (raw.get(f"Остановка {i}") or "").strip()
+        if stop:
+            stops.append(stop)
+    if stops:
+        lines.append("Остановки: " + ", ".join(stops))
+
+    # Ссылки
+    for label, key in [
+        ("WhatsApp", "whatsapp"),
+        ("Услуги", "linkService"),
+        ("Отзывы", "linkReviews"),
+    ]:
+        link = (raw.get(key) or "").strip()
+        if link:
+            lines.append(f"{label}: {link}")
+
+    # Координаты
+    lat = raw.get("coordinatesLat")
+    lon = raw.get("coordinatesLon")
+    if lat is not None and lon is not None:
+        lines.append(f"Координаты: {lat}, {lon}")
+
+    # Дата парсинга
+    parsed_at = (raw.get("parsedAt") or "").strip()
+    if parsed_at:
+        lines.append(f"Дата парсинга: {parsed_at}")
+
+    return "\n\n".join(lines)
+
+
+def _yandex_row_to_bitrix(raw: dict) -> list[str]:
+    """Из объекта Яндекса → готовая строка CSV (64 колонки)"""
+    title = (raw.get("title") or "").strip()
+    address_raw = (raw.get("address") or "").strip()
+    addr = _parse_address_yandex(address_raw)
+
+    # Телефоны
+    phones = []
+    for i in range(1, 4):
+        p = clean_phone(raw.get(f"phone_{i}", ""))
+        if p and is_valid_phone(p):
+            phones.append(p)
+
+    # Сайт
+    site = (raw.get("companyUrl") or "").strip()
+
+    # Соцсети
+    telegram = (raw.get("telegram") or "").strip()
+    vk = (raw.get("vkontakte") or "").strip()
+
+    # Комментарий
+    comment = _build_comment_yandex(raw)
+
+    # Категория 0 → Тип услуги
+    service_type = (raw.get("Category 0") or "").strip()
+
+    # Собираем строку по порядку BITRIX_CSV_HEADERS
+    row = []
+    for h in BITRIX_CSV_HEADERS:
+        if h == "ID":
+            row.append(str(raw.get("id", "")))
+        elif h == "Название лида":
+            row.append(title)
+        elif h == "Название компании":
+            row.append(title)
+        elif h == "Адрес":
+            row.append(address_raw)
+        elif h == "Населенный пункт":
+            row.append(addr["city"])
+        elif h == "Улица, номер дома":
+            row.append(addr["street"])
+        elif h == "Мобильный телефон":
+            row.append(phones[0] if len(phones) > 0 else "")
+        elif h == "Рабочий телефон":
+            row.append(phones[1] if len(phones) > 1 else "")
+        elif h == "Другой телефон":
+            row.append(phones[2] if len(phones) > 2 else "")
+        elif h == "Корпоративный сайт":
+            row.append(site)
+        elif h == "Контакт Telegram":
+            row.append(telegram)
+        elif h == "Контакт ВКонтакте":
+            row.append(vk)
+        elif h == "Комментарий":
+            row.append(comment)
+        elif h == "Источник":
+            row.append("Яндекс.Карты")
+        elif h == "Дополнительно об источнике":
+            row.append(raw.get("url", ""))
+        elif h == "Тип услуги":
+            row.append(service_type)
+        elif h == "Стадия":
+            row.append("НОВЫЙ")
+        elif h == "Доступен для всех":
+            row.append("Да")
+        else:
+            row.append("")
+    return row
+
+
+# ----------------------------------------------------------------
+# ОРИГИНАЛЬНЫЙ МАППИНГ (Битрикс)
+# ----------------------------------------------------------------
 
 def _cell(raw: dict, key: str) -> str:
     v = raw.get(CSV_COLUMNS[key], "")
@@ -120,16 +298,32 @@ def _bitrix_row_from_raw(raw: dict) -> list[str]:
     return [_bitrix_cell_for_csv(h, raw) for h in BITRIX_CSV_HEADERS]
 
 
-def read_json(file_path: str) -> list[dict]:
-    """Читает JSON-массив лидов; ключи полей — как в экспорте Битрикс."""
+# ----------------------------------------------------------------
+# ЧТЕНИЕ JSON
+# ----------------------------------------------------------------
+
+def read_json(file_path: str, is_yandex: bool = False) -> list[dict]:
+    """Читает JSON-массив. Для Битрикса проверяет обязательные поля."""
     with open(file_path, "r", encoding="utf-8-sig") as f:
         data = json.load(f)
     if not isinstance(data, list):
-        raise ValueError("JSON должен быть массивом объектов (лидов)")
+        raise ValueError("JSON должен быть массивом объектов")
+    if is_yandex:
+        # Яндекс: минимальная проверка
+        for i, item in enumerate(data):
+            if not isinstance(item, dict):
+                raise ValueError(
+                    f"Элемент #{i + 1}: ожидается объект, не {type(item).__name__}"
+                )
+        return data
+
+    # Битрикс: строгая проверка
     leads: list[dict] = []
     for i, item in enumerate(data):
         if not isinstance(item, dict):
-            raise ValueError(f"Элемент #{i + 1}: ожидается объект, не {type(item).__name__}")
+            raise ValueError(
+                f"Элемент #{i + 1}: ожидается объект, не {type(item).__name__}"
+            )
         row = {(k or "").strip(): v for k, v in item.items()}
         missing = [h for h in REQUIRED_HEADERS if h not in row]
         if missing:
@@ -141,55 +335,12 @@ def read_json(file_path: str) -> list[dict]:
     return leads
 
 
-def write_csv(
-    leads: list[list[str]],
-    errors: list[dict],
-    duplicates: dict,
-    output_path: str,
-) -> None:
-    """
-    leads — строки успешных лидов (в порядке BITRIX_CSV_HEADERS).
-    duplicates — {"indices": set[int], "skipped": bool, "rows": list[list[str]]}
-    """
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    dup_skipped: bool = bool(duplicates.get("skipped"))
-    dup_rows: list[list[str]] = list(duplicates.get("rows") or [])
-
-    ncol = len(BITRIX_CSV_HEADERS)
-    marker_pad = [""] * (ncol - 1) if ncol > 1 else []
-
-    with open(output_path, "w", encoding="utf-8-sig", newline="") as f:
-        w = csv.writer(f, delimiter=CSV_OUTPUT_DELIMITER, quoting=csv.QUOTE_MINIMAL)
-        w.writerow(BITRIX_CSV_HEADERS)
-        for row in leads:
-            w.writerow(row)
-
-        w.writerow(["=== ДУБЛИКАТЫ ==="] + marker_pad)
-        if dup_skipped:
-            w.writerow(
-                [
-                    f"⚠️ Записей в JSON больше {MAX_DUPLICATE_CHECK}, "
-                    "проверка дубликатов отключена"
-                ]
-                + [""] * (ncol - 1)
-            )
-        else:
-            w.writerow(BITRIX_CSV_HEADERS)
-            for row in dup_rows:
-                w.writerow(row)
-
-        w.writerow(["=== ОШИБКИ ==="] + marker_pad)
-        err_h = list(BITRIX_CSV_HEADERS) + ["Ошибка"]
-        w.writerow(err_h)
-        for err in errors:
-            raw = err.get("data") or {}
-            line = _error_row_values(raw)
-            line.append(str(err.get("error", "")))
-            w.writerow(line)
-
+# ----------------------------------------------------------------
+# ДУБЛИКАТЫ (используется только для Битрикс-формата)
+# ----------------------------------------------------------------
 
 def map_lead(raw: dict) -> dict:
-    """Мапит одну строку CSV в структурированный словарь"""
+    """Мапит одну строку CSV в структурированный словарь (только Битрикс)"""
     birth_raw = _cell(raw, "birth_date")
 
     _co = raw.get("Компания", "")
@@ -364,68 +515,157 @@ def _error_row_values(raw: dict) -> list[str]:
     return row
 
 
+# ----------------------------------------------------------------
+# ЗАПИСЬ CSV
+# ----------------------------------------------------------------
+
+def write_csv(
+    leads: list[list[str]],
+    errors: list[dict],
+    duplicates: dict,
+    output_path: str,
+) -> None:
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    dup_skipped: bool = bool(duplicates.get("skipped"))
+    dup_rows: list[list[str]] = list(duplicates.get("rows") or [])
+
+    ncol = len(BITRIX_CSV_HEADERS)
+    marker_pad = [""] * (ncol - 1) if ncol > 1 else []
+
+    with open(output_path, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f, delimiter=CSV_OUTPUT_DELIMITER, quoting=csv.QUOTE_MINIMAL)
+        w.writerow(BITRIX_CSV_HEADERS)
+        for row in leads:
+            w.writerow(row)
+
+        w.writerow(["=== ДУБЛИКАТЫ ==="] + marker_pad)
+        if dup_skipped:
+            w.writerow(
+                [
+                    f"⚠️ Записей в JSON больше {MAX_DUPLICATE_CHECK}, "
+                    "проверка дубликатов отключена"
+                ]
+                + [""] * (ncol - 1)
+            )
+        else:
+            w.writerow(BITRIX_CSV_HEADERS)
+            for row in dup_rows:
+                w.writerow(row)
+
+        w.writerow(["=== ОШИБКИ ==="] + marker_pad)
+        err_h = list(BITRIX_CSV_HEADERS) + ["Ошибка"]
+        w.writerow(err_h)
+        for err in errors:
+            raw = err.get("data") or {}
+            line = _error_row_values(raw)
+            line.append(str(err.get("error", "")))
+            w.writerow(line)
+
+
+# ----------------------------------------------------------------
+# ГЛАВНАЯ ФУНКЦИЯ ОБРАБОТКИ
+# ----------------------------------------------------------------
+
 def process_leads(
     input_path: str = INPUT_JSON,
     output_path: str = OUTPUT_CSV,
 ) -> dict:
-    """Читает JSON, мапит, сохраняет CSV. Возвращает сводку для CLI."""
+    """Читает JSON (Битрикс или Яндекс), сохраняет CSV. Возвращает сводку."""
     if not os.path.exists(input_path):
         raise FileNotFoundError(f"Файл не найден: {input_path}")
 
-    raw_leads = read_json(input_path)
-    mapped_leads: list[dict] = []
-    errors: list[dict] = []
-    leads_rows: list[list[str]] = []
+    # Читаем сырые данные для определения формата
+    with open(input_path, "r", encoding="utf-8-sig") as f:
+        raw_data = json.load(f)
 
-    for i, raw in enumerate(raw_leads, start=1):
-        if i % PROGRESS_EVERY == 0:
-            print(f"… обработано записей: {i} / {len(raw_leads)}", flush=True)
-        try:
-            mapped = map_lead(raw)
-            mapped["_csv_row"] = i
-            mapped_leads.append(mapped)
-            leads_rows.append(_bitrix_row_from_raw(raw))
-        except Exception as e:
-            errors.append({"row": i, "error": str(e), "data": raw})
+    is_yandex = _is_yandex_format(raw_data)
+    fmt_label = "Яндекс.Карты" if is_yandex else "Битрикс 24"
+    print(f"📋 Определён формат: {fmt_label}")
 
-    n_rows = len(raw_leads)
-    if n_rows > MAX_DUPLICATE_CHECK:
-        print(
-            f"⚠️ Записей в JSON больше {MAX_DUPLICATE_CHECK}, "
-            "проверка дубликатов отключена",
-            flush=True,
-        )
-        duplicates = {"phones": {}, "emails": {}, "companies": {}, "skipped": True}
+    if is_yandex:
+        # --- Режим Яндекс.Карты ---
+        raw_leads = read_json(input_path, is_yandex=True)
+        leads_rows: list[list[str]] = []
+        errors: list[dict] = []
+
+        for i, raw in enumerate(raw_leads, start=1):
+            if i % PROGRESS_EVERY == 0:
+                print(f"… обработано записей: {i} / {len(raw_leads)}", flush=True)
+            try:
+                row = _yandex_row_to_bitrix(raw)
+                leads_rows.append(row)
+            except Exception as e:
+                errors.append({"row": i, "error": str(e), "data": raw})
+
+        # Дубликаты для Яндекса — упрощённо: не проверяем
+        duplicates = {
+            "phones": {},
+            "emails": {},
+            "companies": {},
+            "skipped": True,
+            "rows": [],
+        }
         dup_count = 0
-        dup_ids: set[str] = set()
-        dup_check_skipped = True
+
     else:
-        duplicates = _build_duplicates(mapped_leads)
-        duplicates["skipped"] = False
-        dup_count = _duplicate_groups_count(duplicates)
-        dup_ids = _lead_ids_in_duplicates(duplicates)
-        dup_check_skipped = False
+        # --- Режим Битрикс 24 (старая логика) ---
+        raw_leads = read_json(input_path, is_yandex=False)
+        mapped_leads: list[dict] = []
+        errors: list[dict] = []
+        leads_rows: list[list[str]] = []
 
-    dup_row_indices: set[int] = set()
-    for idx, mapped in enumerate(mapped_leads):
-        lid = (mapped.get("id") or "").strip()
-        if not lid:
-            lid = f"row_{mapped.get('_csv_row', 0)}"
-        if lid in dup_ids:
-            dup_row_indices.add(idx)
+        for i, raw in enumerate(raw_leads, start=1):
+            if i % PROGRESS_EVERY == 0:
+                print(f"… обработано записей: {i} / {len(raw_leads)}", flush=True)
+            try:
+                mapped = map_lead(raw)
+                mapped["_csv_row"] = i
+                mapped_leads.append(mapped)
+                leads_rows.append(_bitrix_row_from_raw(raw))
+            except Exception as e:
+                errors.append({"row": i, "error": str(e), "data": raw})
 
-    dup_rows_out = [leads_rows[i] for i in sorted(dup_row_indices)]
-    dup_block = {
-        "indices": dup_row_indices,
-        "skipped": dup_check_skipped,
-        "rows": dup_rows_out,
-    }
-    write_csv(leads_rows, errors, dup_block, output_path)
+        n_rows = len(raw_leads)
+        if n_rows > MAX_DUPLICATE_CHECK:
+            print(
+                f"⚠️ Записей в JSON больше {MAX_DUPLICATE_CHECK}, "
+                "проверка дубликатов отключена",
+                flush=True,
+            )
+            duplicates = {
+                "phones": {},
+                "emails": {},
+                "companies": {},
+                "skipped": True,
+            }
+            dup_count = 0
+            dup_ids: set[str] = set()
+            dup_check_skipped = True
+        else:
+            duplicates = _build_duplicates(mapped_leads)
+            duplicates["skipped"] = False
+            dup_count = _duplicate_groups_count(duplicates)
+            dup_ids = _lead_ids_in_duplicates(duplicates)
+            dup_check_skipped = False
+
+        dup_row_indices: set[int] = set()
+        for idx, mapped in enumerate(mapped_leads):
+            lid = (mapped.get("id") or "").strip()
+            if not lid:
+                lid = f"row_{mapped.get('_csv_row', 0)}"
+            if lid in dup_ids:
+                dup_row_indices.add(idx)
+
+        dup_rows_out = [leads_rows[i] for i in sorted(dup_row_indices)]
+        duplicates["rows"] = dup_rows_out
+        duplicates["skipped"] = dup_check_skipped
+
+    write_csv(leads_rows, errors, duplicates, output_path)
 
     return {
-        "processed": len(mapped_leads),
+        "processed": len(leads_rows),
         "errors": len(errors),
-        "duplicates_count": dup_count,
+        "duplicates_count": dup_count if not is_yandex else 0,
     }
 
 
