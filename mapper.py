@@ -4,6 +4,7 @@ import json
 import os
 import re
 from datetime import datetime
+from urllib.parse import urlparse
 
 from config import (
     INPUT_JSON,
@@ -89,90 +90,23 @@ def _parse_address_yandex(address: str) -> dict:
     return {"city": city, "street": street}
 
 
-def _build_comment_yandex(raw: dict) -> str:
-    """Собирает комментарий из данных Яндекса"""
-    lines = []
-
-    # График работы
-    days = []
-    for i in range(7):
-        val = (raw.get(f"Day {i}") or "").strip()
-        if val:
-            days.append(f"День {i}: {val}")
-    if days:
-        lines.append("Режим работы:\n" + "\n".join(days))
-
-    # Статус
-    status = (raw.get("currentWorkingStatus") or "").strip()
-    if status:
-        lines.append(f"Статус: {status}")
-
-    # Категории
-    cats = []
-    for i in range(3):
-        cat = (raw.get(f"Category {i}") or "").strip()
-        if cat:
-            cats.append(cat)
-    if cats:
-        lines.append("Категории: " + ", ".join(cats))
-
-    # Приоритет
-    priority = (raw.get("priority") or "").strip()
-    if priority:
-        lines.append(f"Приоритет: {priority}")
-
-    # Рейтинг
-    rating = raw.get("rating")
-    rating_count = raw.get("ratingCount")
-    if rating is not None:
-        lines.append(f"Рейтинг: {rating} (отзывов: {rating_count or 0})")
-
-    # Место в поиске
-    place = raw.get("placeInSearch")
-    if place is not None:
-        lines.append(f"Место в поиске: {place}")
-
-    # Остановки
-    stops = []
-    for i in range(5):
-        stop = (raw.get(f"Остановка {i}") or "").strip()
-        if stop:
-            stops.append(stop)
-    if stops:
-        lines.append("Остановки: " + ", ".join(stops))
-
-    # Ссылки
-    for label, key in [
-        ("WhatsApp", "whatsapp"),
-        ("Услуги", "linkService"),
-        ("Отзывы", "linkReviews"),
-    ]:
-        link = (raw.get(key) or "").strip()
-        if link:
-            lines.append(f"{label}: {link}")
-
-    # Координаты
-    lat = raw.get("coordinatesLat")
-    lon = raw.get("coordinatesLon")
-    if lat is not None and lon is not None:
-        lines.append(f"Координаты: {lat}, {lon}")
-
-    # Дата парсинга
-    parsed_at = (raw.get("parsedAt") or "").strip()
-    if parsed_at:
-        lines.append(f"Дата парсинга: {parsed_at}")
-
-    return "\n\n".join(lines)
+def _clean_url(url: str) -> str:
+    """Оставляет только домен: https://adv71.ru/?yclid=... → https://adv71.ru"""
+    if not url:
+        return ""
+    url = url.strip()
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}"
 
 
 def _yandex_row_to_bitrix(raw: dict, json_filename: str = "") -> list[str]:
     """Из объекта Яндекса → готовая строка CSV (64 колонки)"""
     title = (raw.get("title") or "").strip()
     category_0 = (raw.get("Category 0") or "").strip()
-    
+
     # Название лида = Категория - Название
     lead_name = f"{category_0} - {title}" if category_0 else title
-    
+
     address_raw = (raw.get("address") or "").strip()
     addr = _parse_address_yandex(address_raw)
 
@@ -184,11 +118,14 @@ def _yandex_row_to_bitrix(raw: dict, json_filename: str = "") -> list[str]:
     if not is_valid_phone(phone_2):
         phone_2 = ""
 
+    # Сайт — только домен
+    site = _clean_url(raw.get("companyUrl", ""))
+
     # Собираем строку по порядку BITRIX_CSV_HEADERS
     row = []
     for h in BITRIX_CSV_HEADERS:
         if h == "ID":
-            row.append("")  # пусто
+            row.append("")
         elif h == "Название лида":
             row.append(lead_name)
         elif h == "Название компании":
@@ -204,35 +141,34 @@ def _yandex_row_to_bitrix(raw: dict, json_filename: str = "") -> list[str]:
         elif h == "Рабочий телефон":
             row.append(phone_2)
         elif h == "Другой телефон":
-            row.append("")  # пусто, только два телефона
+            row.append("")
         elif h == "Корпоративный сайт":
-            row.append("")  # убрали
+            row.append(site)
         elif h == "Контакт Telegram":
-            row.append("")  # убрали
+            row.append("")
         elif h == "Контакт ВКонтакте":
-            row.append("")  # убрали
+            row.append("")
         elif h == "Контакт Viber":
-            row.append("")  # убрали
+            row.append("")
         elif h == "Другой контакт":
-            row.append("")  # убрали
+            row.append("")
         elif h == "Комментарий":
-            row.append("")  # убрали
+            row.append("")
         elif h == "Источник":
             row.append("Холодный звонок")
         elif h == "Дополнительно об источнике":
-            row.append("")  # пусто
+            row.append("")
         elif h == "Источник телефона":
-            row.append(json_filename)  # имя JSON-файла
+            row.append(json_filename)
         elif h == "Тип услуги":
             row.append("ГЦК")
         elif h == "Стадия":
-            row.append("")  # пусто
+            row.append("")
         elif h == "Доступен для всех":
-            row.append("")  # пусто
+            row.append("")
         else:
             row.append("")
     return row
-
 
 # ----------------------------------------------------------------
 # ОРИГИНАЛЬНЫЙ МАППИНГ (Битрикс)
@@ -521,12 +457,9 @@ def _error_row_values(raw: dict) -> list[str]:
 def write_csv(
     leads: list[list[str]],
     errors: list[dict],
-    duplicates: dict,
     output_path: str,
 ) -> None:
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    dup_skipped: bool = bool(duplicates.get("skipped"))
-    dup_rows: list[list[str]] = list(duplicates.get("rows") or [])
 
     ncol = len(BITRIX_CSV_HEADERS)
     marker_pad = [""] * (ncol - 1) if ncol > 1 else []
@@ -537,29 +470,15 @@ def write_csv(
         for row in leads:
             w.writerow(row)
 
-        w.writerow(["=== ДУБЛИКАТЫ ==="] + marker_pad)
-        if dup_skipped:
-            w.writerow(
-                [
-                    f"⚠️ Записей в JSON больше {MAX_DUPLICATE_CHECK}, "
-                    "проверка дубликатов отключена"
-                ]
-                + [""] * (ncol - 1)
-            )
-        else:
-            w.writerow(BITRIX_CSV_HEADERS)
-            for row in dup_rows:
-                w.writerow(row)
-
-        w.writerow(["=== ОШИБКИ ==="] + marker_pad)
-        err_h = list(BITRIX_CSV_HEADERS) + ["Ошибка"]
-        w.writerow(err_h)
-        for err in errors:
-            raw = err.get("data") or {}
-            line = _error_row_values(raw)
-            line.append(str(err.get("error", "")))
-            w.writerow(line)
-
+        if errors:
+            w.writerow(["=== ОШИБКИ ==="] + marker_pad)
+            err_h = list(BITRIX_CSV_HEADERS) + ["Ошибка"]
+            w.writerow(err_h)
+            for err in errors:
+                raw = err.get("data") or {}
+                line = _error_row_values(raw)
+                line.append(str(err.get("error", "")))
+                w.writerow(line)
 
 # ----------------------------------------------------------------
 # ГЛАВНАЯ ФУНКЦИЯ ОБРАБОТКИ
@@ -585,6 +504,7 @@ def process_leads(
         # --- Режим Яндекс.Карты ---
         raw_leads = read_json(input_path, is_yandex=True)
         leads_rows: list[list[str]] = []
+        seen: set[tuple] = set()
         errors: list[dict] = []
 
         for i, raw in enumerate(raw_leads, start=1):
@@ -592,18 +512,14 @@ def process_leads(
                 print(f"… обработано записей: {i} / {len(raw_leads)}", flush=True)
             try:
                 row = _yandex_row_to_bitrix(raw, os.path.basename(input_path))
-                leads_rows.append(row)
+                # Уникальность по (название лида, телефон1, телефон2)
+                key = (row[1], row[16], row[17])
+                if key not in seen:
+                    seen.add(key)
+                    leads_rows.append(row)
             except Exception as e:
                 errors.append({"row": i, "error": str(e), "data": raw})
 
-        # Дубликаты для Яндекса — упрощённо: не проверяем
-        duplicates = {
-            "phones": {},
-            "emails": {},
-            "companies": {},
-            "skipped": True,
-            "rows": [],
-        }
         dup_count = 0
 
     else:
@@ -659,7 +575,7 @@ def process_leads(
         duplicates["rows"] = dup_rows_out
         duplicates["skipped"] = dup_check_skipped
 
-    write_csv(leads_rows, errors, duplicates, output_path)
+    write_csv(leads_rows, errors, output_path)
 
     return {
         "processed": len(leads_rows),
