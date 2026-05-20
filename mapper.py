@@ -1,20 +1,16 @@
 # mapper.py
 import csv
-import io
+import json
 import os
 import re
 from datetime import datetime
 
-from openpyxl import Workbook
-from openpyxl.styles import PatternFill
-from openpyxl.utils import get_column_letter
-
 from config import (
-    INPUT_FILE,
-    OUTPUT_EXCEL,
+    INPUT_JSON,
+    OUTPUT_CSV,
+    BITRIX_CSV_HEADERS,
     CSV_COLUMNS,
-    CSV_DELIMITER,
-    CSV_ENCODINGS,
+    CSV_OUTPUT_DELIMITER,
     PHONE_FIELDS,
     EMAIL_FIELDS,
     MAX_DUPLICATE_CHECK,
@@ -41,74 +37,6 @@ _COMPANY_LEGAL = re.compile(
     re.IGNORECASE,
 )
 
-# Порядок колонок как в шаблоне импорта Битрикс24
-BITRIX_EXCEL_HEADERS = [
-    "ID",
-    "Название лида",
-    "Обращение",
-    "Имя",
-    "Фамилия",
-    "Отчество",
-    "Имя, Фамилия",
-    "Дата рождения",
-    "Адрес",
-    "Улица, номер дома",
-    "Квартира, офис, комната, этаж",
-    "Населенный пункт",
-    "Район",
-    "Регион",
-    "Почтовый индекс",
-    "Страна",
-    "Рабочий телефон",
-    "Мобильный телефон",
-    "Номер факса",
-    "Домашний телефон",
-    "Номер пейджера",
-    "Телефон для рассылок",
-    "Другой телефон",
-    "Корпоративный сайт",
-    "Личная страница",
-    "Страница Facebook",
-    "Страница ВКонтакте",
-    "Страница LiveJournal",
-    "Микроблог Twitter",
-    "Другой сайт",
-    "Рабочий e-mail",
-    "Частный e-mail",
-    "E-mail для рассылок",
-    "Другой e-mail",
-    "Контакт Facebook",
-    "Контакт Telegram",
-    "Контакт ВКонтакте",
-    "Контакт Viber",
-    "Комментарии Instagram",
-    "Контакт Битрикс24 Network",
-    "Онлайн-чат",
-    "Контакт Открытая линия",
-    "Другой контакт",
-    "Связанный пользователь",
-    "Название компании",
-    "Должность",
-    "Комментарий",
-    "Стадия",
-    "Дополнительно о стадии",
-    "Товар",
-    "Цена",
-    "Количество",
-    "Возможная сумма",
-    "Валюта",
-    "Источник",
-    "Дополнительно об источнике",
-    "Доступен для всех",
-    "Ответственный",
-    "Тип услуги",
-    "Новый файл",
-    "Доп файл",
-    "Источник телефона",
-    "Причина отказа",
-    "дело",
-]
-
 PHONE_HEADERS = frozenset(
     {
         "Рабочий телефон",
@@ -131,12 +59,6 @@ EMAIL_HEADERS = frozenset(
 )
 
 NUM_HEADERS = frozenset({"Цена", "Количество", "Возможная сумма"})
-
-RED_FILL = PatternFill(
-    start_color="FFFFC7CE",
-    end_color="FFFFC7CE",
-    fill_type="solid",
-)
 
 
 def _cell(raw: dict, key: str) -> str:
@@ -172,7 +94,7 @@ def _format_ru_decimal(n: float) -> str:
     return f"{n:.2f}".replace(".", ",")
 
 
-def _format_excel_cell(header: str, raw: dict) -> str:
+def _bitrix_cell_for_csv(header: str, raw: dict) -> str:
     if header == "Название компании":
         val = _raw_get(raw, "Название компании") or _raw_get(raw, "Компания")
     else:
@@ -194,42 +116,76 @@ def _format_excel_cell(header: str, raw: dict) -> str:
     return val
 
 
-def _build_excel_row(raw: dict) -> list[str]:
-    return [_format_excel_cell(h, raw) for h in BITRIX_EXCEL_HEADERS]
+def _bitrix_row_from_raw(raw: dict) -> list[str]:
+    return [_bitrix_cell_for_csv(h, raw) for h in BITRIX_CSV_HEADERS]
 
 
-def read_csv(file_path: str) -> list[dict]:
-    """Читает CSV. Кодировка и разделитель из config; заголовки с trim."""
-    text = None
-    for enc in CSV_ENCODINGS:
-        try:
-            with open(file_path, "r", encoding=enc, newline="") as f:
-                text = f.read()
-            break
-        except UnicodeDecodeError:
-            continue
-    if text is None:
-        raise ValueError(
-            f"Не удалось прочитать CSV ({file_path}). "
-            f"Испробованы кодировки: {', '.join(CSV_ENCODINGS)}"
-        )
-
-    buf = io.StringIO(text)
-    reader = csv.DictReader(buf, delimiter=CSV_DELIMITER)
-    raw_fields = list(reader.fieldnames or [])
-    stripped_set = {(h or "").strip() for h in raw_fields}
-    missing = [h for h in REQUIRED_HEADERS if h not in stripped_set]
-    if missing:
-        raise ValueError(
-            "В CSV отсутствуют обязательные колонки: "
-            + ", ".join(missing)
-        )
-
-    leads = []
-    for row in reader:
-        new_row = {(k or "").strip(): v for k, v in row.items()}
-        leads.append(new_row)
+def read_json(file_path: str) -> list[dict]:
+    """Читает JSON-массив лидов; ключи полей — как в экспорте Битрикс."""
+    with open(file_path, "r", encoding="utf-8-sig") as f:
+        data = json.load(f)
+    if not isinstance(data, list):
+        raise ValueError("JSON должен быть массивом объектов (лидов)")
+    leads: list[dict] = []
+    for i, item in enumerate(data):
+        if not isinstance(item, dict):
+            raise ValueError(f"Элемент #{i + 1}: ожидается объект, не {type(item).__name__}")
+        row = {(k or "").strip(): v for k, v in item.items()}
+        missing = [h for h in REQUIRED_HEADERS if h not in row]
+        if missing:
+            raise ValueError(
+                f"Объект #{i + 1}: отсутствуют обязательные поля: "
+                + ", ".join(missing)
+            )
+        leads.append(row)
     return leads
+
+
+def write_csv(
+    leads: list[list[str]],
+    errors: list[dict],
+    duplicates: dict,
+    output_path: str,
+) -> None:
+    """
+    leads — строки успешных лидов (в порядке BITRIX_CSV_HEADERS).
+    duplicates — {"indices": set[int], "skipped": bool, "rows": list[list[str]]}
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    dup_skipped: bool = bool(duplicates.get("skipped"))
+    dup_rows: list[list[str]] = list(duplicates.get("rows") or [])
+
+    ncol = len(BITRIX_CSV_HEADERS)
+    marker_pad = [""] * (ncol - 1) if ncol > 1 else []
+
+    with open(output_path, "w", encoding="utf-8-sig", newline="") as f:
+        w = csv.writer(f, delimiter=CSV_OUTPUT_DELIMITER, quoting=csv.QUOTE_MINIMAL)
+        w.writerow(BITRIX_CSV_HEADERS)
+        for row in leads:
+            w.writerow(row)
+
+        w.writerow(["=== ДУБЛИКАТЫ ==="] + marker_pad)
+        if dup_skipped:
+            w.writerow(
+                [
+                    f"⚠️ Записей в JSON больше {MAX_DUPLICATE_CHECK}, "
+                    "проверка дубликатов отключена"
+                ]
+                + [""] * (ncol - 1)
+            )
+        else:
+            w.writerow(BITRIX_CSV_HEADERS)
+            for row in dup_rows:
+                w.writerow(row)
+
+        w.writerow(["=== ОШИБКИ ==="] + marker_pad)
+        err_h = list(BITRIX_CSV_HEADERS) + ["Ошибка"]
+        w.writerow(err_h)
+        for err in errors:
+            raw = err.get("data") or {}
+            line = _error_row_values(raw)
+            line.append(str(err.get("error", "")))
+            w.writerow(line)
 
 
 def map_lead(raw: dict) -> dict:
@@ -398,7 +354,7 @@ def _lead_ids_in_duplicates(duplicates: dict) -> set[str]:
 
 def _error_row_values(raw: dict) -> list[str]:
     row = []
-    for h in BITRIX_EXCEL_HEADERS:
+    for h in BITRIX_CSV_HEADERS:
         if h == "Название компании":
             row.append(
                 _raw_get(raw, "Название компании") or _raw_get(raw, "Компания")
@@ -408,125 +364,34 @@ def _error_row_values(raw: dict) -> list[str]:
     return row
 
 
-def _apply_sheet_view(
-    ws,
-    headers: list[str],
-    n_data_rows: int,
-    header_row: int = 1,
-) -> None:
-    ncols = len(headers)
-    for j, h in enumerate(headers, start=1):
-        col = get_column_letter(j)
-        ws.column_dimensions[col].width = min(60, len(str(h)) + 2)
-    ws.freeze_panes = f"A{header_row + 1}"
-    last_row = header_row + max(n_data_rows, 1)
-    ws.auto_filter.ref = (
-        f"A{header_row}:{get_column_letter(ncols)}{last_row}"
-    )
-
-
-def _write_excel_workbook(
-    output_path: str,
-    leads_rows: list[list[str]],
-    dup_row_indices: set[int],
-    errors: list[dict],
-    dup_check_skipped: bool,
-) -> None:
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    wb = Workbook()
-
-    ws_leads = wb.active
-    ws_leads.title = "Лиды"
-    ws_leads.append(BITRIX_EXCEL_HEADERS)
-    for row in leads_rows:
-        ws_leads.append(row)
-    _apply_sheet_view(ws_leads, BITRIX_EXCEL_HEADERS, len(leads_rows), header_row=1)
-
-    ws_dup = wb.create_sheet("Дубликаты")
-    dup_rows_written = 0
-    if dup_check_skipped:
-        end_c = get_column_letter(len(BITRIX_EXCEL_HEADERS))
-        ws_dup.merge_cells(f"A1:{end_c}1")
-        ws_dup["A1"] = (
-            f"⚠️ Строк в CSV больше {MAX_DUPLICATE_CHECK}, "
-            "проверка дубликатов отключена"
-        )
-        hdr_row = 2
-        for c, h in enumerate(BITRIX_EXCEL_HEADERS, start=1):
-            ws_dup.cell(row=hdr_row, column=c, value=h)
-        data_row = 3
-        for i, row in enumerate(leads_rows):
-            if i not in dup_row_indices:
-                continue
-            for c, val in enumerate(row, start=1):
-                cell = ws_dup.cell(row=data_row, column=c, value=val)
-                cell.fill = RED_FILL
-            data_row += 1
-            dup_rows_written += 1
-        _apply_sheet_view(
-            ws_dup, BITRIX_EXCEL_HEADERS, dup_rows_written, header_row=2
-        )
-    else:
-        ws_dup.append(BITRIX_EXCEL_HEADERS)
-        for i, row in enumerate(leads_rows):
-            if i not in dup_row_indices:
-                continue
-            ws_dup.append(row)
-            excel_row = ws_dup.max_row
-            for c in range(1, len(BITRIX_EXCEL_HEADERS) + 1):
-                ws_dup.cell(row=excel_row, column=c).fill = RED_FILL
-            dup_rows_written += 1
-        _apply_sheet_view(
-            ws_dup, BITRIX_EXCEL_HEADERS, dup_rows_written, header_row=1
-        )
-
-    err_headers = list(BITRIX_EXCEL_HEADERS) + ["Ошибка"]
-    ws_err = wb.create_sheet("Ошибки")
-    ws_err.append(err_headers)
-    for err in errors:
-        raw = err.get("data") or {}
-        line = _error_row_values(raw)
-        line.append(str(err.get("error", "")))
-        ws_err.append(line)
-    for j, h in enumerate(err_headers, start=1):
-        col = get_column_letter(j)
-        ws_err.column_dimensions[col].width = min(60, len(str(h)) + 2)
-    ws_err.freeze_panes = "A2"
-    n_err = len(errors)
-    last_err = 1 + max(n_err, 1)
-    ws_err.auto_filter.ref = f"A1:{get_column_letter(len(err_headers))}{last_err}"
-
-    wb.save(output_path)
-
-
 def process_leads(
-    input_path: str = INPUT_FILE,
-    output_path: str = OUTPUT_EXCEL,
+    input_path: str = INPUT_JSON,
+    output_path: str = OUTPUT_CSV,
 ) -> dict:
-    """Читает CSV, мапит, сохраняет Excel. Возвращает сводку для CLI."""
+    """Читает JSON, мапит, сохраняет CSV. Возвращает сводку для CLI."""
     if not os.path.exists(input_path):
         raise FileNotFoundError(f"Файл не найден: {input_path}")
 
-    raw_leads = read_csv(input_path)
+    raw_leads = read_json(input_path)
     mapped_leads: list[dict] = []
     errors: list[dict] = []
     leads_rows: list[list[str]] = []
 
     for i, raw in enumerate(raw_leads, start=1):
         if i % PROGRESS_EVERY == 0:
-            print(f"… обработано строк: {i} / {len(raw_leads)}", flush=True)
+            print(f"… обработано записей: {i} / {len(raw_leads)}", flush=True)
         try:
             mapped = map_lead(raw)
             mapped["_csv_row"] = i
             mapped_leads.append(mapped)
-            leads_rows.append(_build_excel_row(raw))
+            leads_rows.append(_bitrix_row_from_raw(raw))
         except Exception as e:
             errors.append({"row": i, "error": str(e), "data": raw})
 
     n_rows = len(raw_leads)
     if n_rows > MAX_DUPLICATE_CHECK:
         print(
-            f"⚠️ Строк в CSV больше {MAX_DUPLICATE_CHECK}, "
+            f"⚠️ Записей в JSON больше {MAX_DUPLICATE_CHECK}, "
             "проверка дубликатов отключена",
             flush=True,
         )
@@ -549,9 +414,13 @@ def process_leads(
         if lid in dup_ids:
             dup_row_indices.add(idx)
 
-    _write_excel_workbook(
-        output_path, leads_rows, dup_row_indices, errors, dup_check_skipped
-    )
+    dup_rows_out = [leads_rows[i] for i in sorted(dup_row_indices)]
+    dup_block = {
+        "indices": dup_row_indices,
+        "skipped": dup_check_skipped,
+        "rows": dup_rows_out,
+    }
+    write_csv(leads_rows, errors, dup_block, output_path)
 
     return {
         "processed": len(mapped_leads),

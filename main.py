@@ -3,7 +3,7 @@ import sys
 import time
 
 from mapper import process_leads
-from config import INPUT_FILE, OUTPUT_EXCEL
+from config import INPUT_JSON, OUTPUT_CSV
 
 
 def main():
@@ -11,11 +11,11 @@ def main():
     print("=" * 60)
     print("📞 ОБРАБОТЧИК ЛИДОВ ДЛЯ БИТРИКС 24")
     print("=" * 60)
-    print("Положи CSV в папку input/ (файл leads.csv)")
-    print("Excel будет в папке output/ (файл leads_ready.xlsx)")
+    print("Положи JSON в папку input/ (файл leads.json)")
+    print("CSV будет в папке output/ (файл leads_ready.csv)")
     print("=" * 60)
-    print(f"📂 Вход: {INPUT_FILE}")
-    print(f"📂 Выход: {OUTPUT_EXCEL}")
+    print(f"📂 Вход: {INPUT_JSON}")
+    print(f"📂 Выход: {OUTPUT_CSV}")
     print("=" * 60)
 
     try:
@@ -25,15 +25,15 @@ def main():
             f"Ошибок: {summary['errors']}, "
             f"Групп дубликатов: {summary['duplicates_count']}"
         )
-        print(f"📄 Excel сохранён в: {OUTPUT_EXCEL}")
+        print(f"📄 CSV сохранён в: {OUTPUT_CSV}")
         if summary["errors"] > 0:
             print("⚠️ ВНИМАНИЕ: есть ошибки в строках!")
             sys.exit(1)
         elapsed = time.perf_counter() - t0
         print(f"Выполнено за {elapsed:.1f} сек")
     except FileNotFoundError:
-        print(f"\n❌ Файл не найден: {INPUT_FILE}")
-        print(f"💡 Положи CSV в папку input/ и назови leads.csv")
+        print(f"\n❌ Файл не найден: {INPUT_JSON}")
+        print("💡 Положи JSON в папку input/ и назови leads.json")
         sys.exit(1)
     except Exception as e:
         print(f"\n❌ Неожиданная ошибка: {e}")
