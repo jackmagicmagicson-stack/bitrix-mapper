@@ -1,3 +1,4 @@
+```markdown
 # Bitrix Mapper — подготовка данных к импорту в Битрикс 24
 
 На входе: JSON-файл (`input/leads.json`) — массив объектов.
@@ -17,3 +18,60 @@
 **Командная строка:**
 ```bash
 python3 main.py
+```
+
+**Графическое окно:**
+```bash
+python3 app.py
+```
+
+## Как работает
+
+### Формат Яндекс.Карты (определяется автоматически)
+| Поле Яндекса | Колонка Битрикса |
+|---|---|
+| `title` | Название лида, Название компании |
+| `address` | Адрес, Населенный пункт, Улица |
+| `phone_1` | Мобильный телефон |
+| `phone_2` | Рабочий телефон |
+| `phone_3` | Другой телефон |
+| `companyUrl` | Корпоративный сайт |
+| `telegram` | Контакт Telegram |
+| `vkontakte` | Контакт ВКонтакте |
+| `id` | ID |
+| Всё остальное | Комментарий |
+
+### Формат Битрикс 24
+- Очистка телефонов (8 → +7)
+- Email в нижний регистр
+- Даты → ДД.ММ.ГГГГ
+- Числа → формат с запятой
+- Поиск дубликатов по телефонам, email, компаниям
+
+## Состав проекта
+
+- `main.py` — консольный запуск
+- `app.py` — графическое окно Tkinter
+- `mapper.py` — чтение JSON, определение формата, маппинг, запись CSV
+- `config.py` — пути и константы (64 заголовка Битрикса)
+- `validators.py` — телефоны, email, даты, числа
+- `requirements.txt` — пустой (только стандартная библиотека)
+
+## 🔨 Сборка из исходников
+
+### macOS (.app)
+```bash
+pip3 install pyinstaller
+pyinstaller --windowed --name "BitrixMapper" app.py
+open dist/BitrixMapper.app
+```
+
+### Windows (.exe)
+```bash
+pip install pyinstaller
+pyinstaller --onefile --windowed --name "BitrixMapper" app.py
+```
+Готовый файл: `dist/BitrixMapper.exe`
+
+**Требования:** Python 3.8+
+```
