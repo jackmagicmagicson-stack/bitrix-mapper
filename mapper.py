@@ -165,39 +165,32 @@ def _build_comment_yandex(raw: dict) -> str:
     return "\n\n".join(lines)
 
 
-def _yandex_row_to_bitrix(raw: dict) -> list[str]:
+def _yandex_row_to_bitrix(raw: dict, json_filename: str = "") -> list[str]:
     """Из объекта Яндекса → готовая строка CSV (64 колонки)"""
     title = (raw.get("title") or "").strip()
+    category_0 = (raw.get("Category 0") or "").strip()
+    
+    # Название лида = Категория - Название
+    lead_name = f"{category_0} - {title}" if category_0 else title
+    
     address_raw = (raw.get("address") or "").strip()
     addr = _parse_address_yandex(address_raw)
 
-    # Телефоны
-    phones = []
-    for i in range(1, 4):
-        p = clean_phone(raw.get(f"phone_{i}", ""))
-        if p and is_valid_phone(p):
-            phones.append(p)
-
-    # Сайт
-    site = (raw.get("companyUrl") or "").strip()
-
-    # Соцсети
-    telegram = (raw.get("telegram") or "").strip()
-    vk = (raw.get("vkontakte") or "").strip()
-
-    # Комментарий
-    comment = _build_comment_yandex(raw)
-
-    # Категория 0 → Тип услуги
-    service_type = (raw.get("Category 0") or "").strip()
+    # Только два телефона: phone_1 и phone_2
+    phone_1 = clean_phone(raw.get("phone_1", ""))
+    if not is_valid_phone(phone_1):
+        phone_1 = ""
+    phone_2 = clean_phone(raw.get("phone_2", ""))
+    if not is_valid_phone(phone_2):
+        phone_2 = ""
 
     # Собираем строку по порядку BITRIX_CSV_HEADERS
     row = []
     for h in BITRIX_CSV_HEADERS:
         if h == "ID":
-            row.append(str(raw.get("id", "")))
+            row.append("")  # пусто
         elif h == "Название лида":
-            row.append(title)
+            row.append(lead_name)
         elif h == "Название компании":
             row.append(title)
         elif h == "Адрес":
@@ -207,29 +200,35 @@ def _yandex_row_to_bitrix(raw: dict) -> list[str]:
         elif h == "Улица, номер дома":
             row.append(addr["street"])
         elif h == "Мобильный телефон":
-            row.append(phones[0] if len(phones) > 0 else "")
+            row.append(phone_1)
         elif h == "Рабочий телефон":
-            row.append(phones[1] if len(phones) > 1 else "")
+            row.append(phone_2)
         elif h == "Другой телефон":
-            row.append(phones[2] if len(phones) > 2 else "")
+            row.append("")  # пусто, только два телефона
         elif h == "Корпоративный сайт":
-            row.append(site)
+            row.append("")  # убрали
         elif h == "Контакт Telegram":
-            row.append(telegram)
+            row.append("")  # убрали
         elif h == "Контакт ВКонтакте":
-            row.append(vk)
+            row.append("")  # убрали
+        elif h == "Контакт Viber":
+            row.append("")  # убрали
+        elif h == "Другой контакт":
+            row.append("")  # убрали
         elif h == "Комментарий":
-            row.append(comment)
+            row.append("")  # убрали
         elif h == "Источник":
-            row.append("Яндекс.Карты")
+            row.append("Холодный звонок")
         elif h == "Дополнительно об источнике":
-            row.append(raw.get("url", ""))
+            row.append("")  # пусто
+        elif h == "Источник телефона":
+            row.append(json_filename)  # имя JSON-файла
         elif h == "Тип услуги":
-            row.append(service_type)
+            row.append("ГЦК")
         elif h == "Стадия":
-            row.append("НОВЫЙ")
+            row.append("")  # пусто
         elif h == "Доступен для всех":
-            row.append("Да")
+            row.append("")  # пусто
         else:
             row.append("")
     return row
@@ -592,7 +591,7 @@ def process_leads(
             if i % PROGRESS_EVERY == 0:
                 print(f"… обработано записей: {i} / {len(raw_leads)}", flush=True)
             try:
-                row = _yandex_row_to_bitrix(raw)
+                row = _yandex_row_to_bitrix(raw, os.path.basename(input_path))
                 leads_rows.append(row)
             except Exception as e:
                 errors.append({"row": i, "error": str(e), "data": raw})
